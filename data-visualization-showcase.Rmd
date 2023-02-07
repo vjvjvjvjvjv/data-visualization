@@ -1,0 +1,232 @@
+---
+title: "Data Visualization"
+author: "Julius Lin"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo    = T, 
+                      include = T,
+                      warning = F,
+                      message = F,
+                      comment = NA,
+                      fig.height = 5, 
+                      fig.width  = 5, 
+                      fig.align  = 'center')
+library(tidyverse)
+library(pubtheme)
+library(leaflet)
+library(htmltools)
+library(gganimate)
+library(plotly)
+library(sp)
+library(knitr)
+```
+
+### U.S. Census data
+
+```{r, include=FALSE}
+d = readRDS('data/tracts.census.2019.rds')
+d = d[d$state=='CT',]
+d$label = paste0('GEOID: ', d$GEOID, 
+                 '<br />', 
+                 d$county, 
+                 '<br />', 
+                 d$state)
+head(d@data,2)
+```
+
+#### Median Housing Value v. Median Household Income in Connecticut
+
+```{r fig.height=6, fig.width=6}
+d@data <- d@data %>%
+  mutate(text = paste0('<b>House Value:</b> ', house.value, '<br>',
+                     '<b>Household Income:</b> ', hh.income, '<br>',
+                     '<b>County:</b> ', county, '<br>',
+                     '<b>Population:</b> ', pop, '<extra></extra>'))
+
+d@data %>%
+  plot_ly(x = ~log(house.value),
+          y = ~hh.income) %>%
+  add_markers(showlegend = F,
+              hovertemplate = ~text) %>%
+  layout(
+    yaxis = list(title = "Median House Value"),
+    xaxis = list(title = 'Median Household Income'),
+    paper_bgcolor = pubbackgray, 
+    plot_bgcolor = pubbackgray,
+    hoverlabel = list(bgcolor = "white")
+    )
+```
+
+#### Census Tracts by Household Income
+
+```{r}
+pal1 = colorNumeric(palette = c(publightgray, pubblue), domain = NULL)
+d$label <- paste0("<b>GEOID:</b> ", d$GEOID, "<br />",
+                  "<b>County:</b> ", d$county, "<br />",
+                  "<b>Household Income:</b> ", d$hh.income, "<br />",
+                  "<b>Housing Value:</b> ", d$house.value)
+
+l1 = leaflet(d) %>%
+  addTiles() %>%
+  addPolygons(data = d,
+              fillColor = ~pal1(hh.income),
+              fillOpacity = .9,
+              color = "black",
+              weight = 1,
+              label = ~label %>% lapply(HTML),
+              popup = ~label %>% lapply(HTML)) %>%
+  addLegend(pal = pal1, values = ~hh.income, title = "Household Income") %>%
+  setView(lng = -72.79458, lat = 41.51979, zoom = 9)
+l1
+```
+
+### NBA Match-ups (2010-2022)
+
+```{r, include=FALSE}
+d = readRDS('data/games.rds')
+
+d = d %>% 
+  filter(lg=='nba', season %in% 2005:2022, season.type=='reg') %>%
+  select(date, away, home, ascore, hscore, season, gid)
+
+tms = read.csv('data/nba.teams.csv')
+tms = tms %>% 
+  arrange(conf, div) %>%
+  mutate(
+     ## capitalize the first letter in columns `conf` and `div`
+     conf = paste0(toupper(substr(conf,1,1)), substr(conf, 2, nchar(conf))),
+     div  = paste0(toupper(substr(div ,1,1)), substr( div, 2, nchar( div))), 
+     
+     ## converts `div` into factors whose levels are the unique values of the categorical variables
+     div  = factor(div, levels=unique(div)))
+
+## select the team column from `tms` and convert it from a list to a vector
+teams.order = tms %>% 
+  select(team) %>% 
+  unlist()
+
+dg = d %>%
+  
+  ## for both `home` and `away` columns, convert 'NJN' to 'BKN', convert 'NOH' and 'NOK' to 'NOP', convert 'SEA' to 'OKC', otherwise leave it unchanged
+  mutate(home = case_when(home=='NJN' ~ 'BKN', 
+                          home %in% c('NOH', 'NOK') ~ 'NOP', 
+                          home=='SEA' ~ 'OKC', 
+                          TRUE ~ home), 
+         away = case_when(away=='NJN' ~ 'BKN', 
+                          away %in% c('NOH', 'NOK') ~ 'NOP', 
+                          away=='SEA' ~ 'OKC', 
+                          TRUE ~ away)) %>%
+  
+  ## group the data by away team, home team, and season; find the number of games played by each unique combination of away, home, and season
+  group_by(away, home, season) %>%
+  summarise(games = n()) %>%
+  
+  ## undo the previous grouping operations, complete any missing combination of away, home, and season, and set the number of games of these combinations to be zero
+  ungroup() %>%
+  complete(away, home, season, fill=list(games=0)) %>%
+  
+  ## add divisions of home and away teams by joining `tms` (which contains division information) to `dg` by team name; add suffix '.h' and '.a' to `div` column to differentiate between home and away
+  left_join(tms %>% select(team, div), 
+            by = c('home'='team')) %>%
+  left_join(tms %>% select(team, div), 
+            by = c('away'='team'), suffix=c('.h', '.a')) %>%
+  
+  mutate(
+    
+    ## convert both away and home teams into factors; home's levels are in chronological order, while away's levels are in reversed order
+    away = factor(away, levels=rev(teams.order)), 
+    home = factor(home, levels=teams.order),
+    
+    ## convert season into factors whose levels are the unique values of season
+    season=factor(season, levels=sort(unique(season))),
+    
+    Games = as.character(games)) %>%
+  arrange(season, away, home)
+
+```
+
+```{r}
+g <- ggplot(dg, aes(x=home, y=away, fill=as.character(games))) + 
+  geom_tile(linewidth=0.4, color="black")+
+  scale_fill_manual(values = c("white", publightred, pubred, "red4")) +
+  labs(title= "{closest_state}",
+       fill= "games")+
+  facet_grid(div.a ~ div.h, scales = "free")+
+  theme_pub(type="grid", base_size=30/3)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.3, hjust=1))
+
+gg = g +
+  transition_states(states = season, wrap=F, transition_length=100, state_length = 1)+
+  ease_aes('sine-in-out')
+
+# animate(gg, width=720, height=720, nframes = 300, start_pause = 10, end_pause=10, fps=15, renderer = gifski_renderer())
+# anim_save("nba.gif")
+include_graphics("nba.gif")
+```
+
+
+```{r, include=FALSE}
+d = readRDS('data/EVstations.rds')
+colnames(d) = tolower(colnames(d))
+
+top5networks = c('Tesla',
+                 'Electrify America', 
+                 'ChargePoint Network', 
+                 'eVgo Network', 
+                 'Non-Networked')
+
+d = d %>%
+  select(-matches('cng|lng|lpg|hydrogen|e85|bd[.]blends|french|^ng[.]|plus4|level1')) %>%
+  filter(fuel.type.code=='ELEC') %>%
+  rename(lev2=ev.level2.evse.num, 
+         lev3=ev.dc.fast.count, 
+         network = ev.network, 
+         lat = latitude, 
+         lon = longitude) %>%
+  mutate(status = case_when(status.code=='E' ~ 'avail', 
+                            status.code=='P' ~ 'planned', 
+                            status.code=='T' ~ 'temp.unavail', 
+                            TRUE ~ ''), 
+         lev2 = ifelse(is.na(lev2), 0, lev2), 
+         lev3 = ifelse(is.na(lev3), 0, lev3)) %>%
+  mutate(network = ifelse(network=='Tesla Destination', 'Tesla', network), 
+         network = gsub('Ã©', 'E', network), 
+         network = gsub('Ã‰', 'E', network), 
+         network = ifelse(network %in% top5networks, network, 'Other'), 
+         network = factor(network, levels = c(top5networks, 'Other'))) %>%
+  filter(lat >  1, 
+         lon < -1, 
+         lev3 > 0, 
+         status=='avail') 
+```
+
+### Growth of EV Charging Stations
+
+```{r fig.width=8, warning=FALSE}
+dd1 <- d %>%
+  filter(open.date > "2010-01-01") %>%
+  group_by(network, open.date) %>%
+  summarize(lev3) %>%
+  ungroup() %>%
+  group_by(network) %>%
+  mutate(cumul3 = cumsum(lev3))
+
+dd1 <- na.omit(dd1)
+
+g1 <- ggplot(dd1, aes(x=open.date, y=cumul3, color=network)) +
+  geom_line() +
+  labs(title = "Growth of Level-3 Charging Stations",
+       x = "Date",
+       y = "Level-3 Charging Stations") +
+  coord_cartesian(clip='off', expand=FALSE) +
+  theme_pub(type='line', base_size=36/3)+
+  transition_reveal(open.date)
+
+# animate(g1, width=720, height=480, nframes = 200, start_pause = 10, end_pause=10, fps=15, renderer = gifski_renderer())
+# anim_save("ev-line.gif")
+include_graphics("ev-line.gif")
+```
